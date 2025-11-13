@@ -81,24 +81,37 @@ def prepare_predictor_state(env: SupplyChainEnv, config: Config) -> Dict:
         'context': context
     }
 
-def calculate_decision_error(env: SupplyChainEnv, 
+def calculate_decision_error(env: SupplyChainEnv,
                             predicted_demand: np.ndarray,
                             actual_demand: np.ndarray,
                             config: Config) -> float:
     """
     Calculate decision error for predictor agent
-    Decision error = profit with predicted demand - profit with perfect demand knowledge
+    Reward predictor for accurate predictions (closer to actual demand = higher reward)
     """
-    # Calculate profit achieved with predicted demand (already computed in environment step)
-    predicted_profit = env.warehouse.profit + sum(r.profit for r in env.retailers)
-    
-    # Calculate theoretical optimal profit with perfect demand knowledge
-    optimal_profit = calculate_counterfactual_profit(env, actual_demand, config)
-    
-    # Decision error (negative because we want to minimize the gap)
-    decision_error = -(abs(predicted_profit - optimal_profit))
-    
-    return decision_error
+    # Calculate prediction accuracy using negative MSE (higher is better)
+    if predicted_demand.ndim == 3:
+        # Shape: (num_retailers, horizon, num_products)
+        # Use only next-day predictions for reward
+        predicted_next_day = predicted_demand[:, 0, :]
+    else:
+        predicted_next_day = predicted_demand
+
+    # Calculate MSE between prediction and actual
+    mse = np.mean((predicted_next_day - actual_demand) ** 2)
+
+    # Convert to reward (negative MSE, scaled)
+    # Add bonus for being close to actual demand
+    prediction_reward = -mse * 0.01  # Scale down MSE
+
+    # Additional reward component: how well did predictions help with inventory decisions?
+    # Reward if predictions are in the right ballpark (within 50% of actual)
+    relative_error = np.abs(predicted_next_day - actual_demand) / (actual_demand + 1e-6)
+    accuracy_bonus = np.sum(relative_error < 0.5) * 0.1  # Bonus for accurate predictions
+
+    total_reward = prediction_reward + accuracy_bonus
+
+    return total_reward
 
 def train_mappo(config: Config):
     """Main training function"""

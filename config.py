@@ -50,12 +50,17 @@ class Config:
     value_loss_coef = 0.5
     entropy_coef = 0.01
     max_grad_norm = 0.5
-    
+
     # Training parameters
     batch_size = 64
     mini_batch_size = 32
     ppo_epochs = 4
-    update_frequency = 10  # Update every N episodes
+    update_frequency = 2  # Update every N episodes (reduced from 10 for faster learning)
+
+    # Reward shaping parameters
+    use_reward_shaping = True  # Enable reward shaping to address sparse rewards
+    reward_scale = 0.01  # Scale rewards to reasonable range
+    use_reward_normalization = True  # Normalize rewards using running statistics
     
     # Network parameters
     hidden_size = 256

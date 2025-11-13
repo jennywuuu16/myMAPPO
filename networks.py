@@ -107,10 +107,12 @@ class RetailerActor(nn.Module):
         # Apply tanh squashing and adjust log_prob
         action_tanh = torch.tanh(action)
         log_prob -= torch.log(1 - action_tanh.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
-        
+
         # Scale action to valid range (0 to max order quantity)
-        action_scaled = (action_tanh + 1) * 50  # Scale to [0, 100]
-        
+        # Improved scaling: use retailer capacity as upper bound for more appropriate actions
+        max_order = self.config.retailer_capacity  # Use capacity from config
+        action_scaled = (action_tanh + 1) * (max_order / 2.0)  # Scale to [0, capacity]
+
         return action_scaled, log_prob, dist.entropy().sum(dim=-1, keepdim=True)
 
 class WarehouseActor(nn.Module):
@@ -184,10 +186,12 @@ class WarehouseActor(nn.Module):
         # Apply tanh squashing
         action_tanh = torch.tanh(action)
         log_prob -= torch.log(1 - action_tanh.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
-        
+
         # Scale to valid range (larger scale for warehouse)
-        action_scaled = (action_tanh + 1) * 500  # Scale to [0, 1000]
-        
+        # Improved scaling: use warehouse capacity as reference
+        max_order = self.config.warehouse_capacity * 0.3  # Max order as 30% of capacity per cycle
+        action_scaled = (action_tanh + 1) * (max_order / 2.0)
+
         return action_scaled, log_prob, dist.entropy().sum(dim=-1, keepdim=True)
 
 class CentralizedCritic(nn.Module):

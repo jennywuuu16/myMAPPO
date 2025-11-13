@@ -202,6 +202,13 @@ class SupplyChainEnv:
         self.wholesale_prices = None
         self.supplier_prices = None
 
+        # Add reward normalization statistics
+        self.reward_mean = 0.0
+        self.reward_std = 1.0
+        self.reward_count = 0
+        self.use_reward_shaping = getattr(config, 'use_reward_shaping', True)
+        self.reward_scale = getattr(config, 'reward_scale', 0.01)
+
     def reset(self) -> Dict[str, np.ndarray]:
         for retailer in self.retailers:
             retailer.inventory = np.atleast_1d(np.ones(self.config.num_products) * self.config.retailer_initial_inventory)
@@ -261,18 +268,39 @@ class SupplyChainEnv:
         total_retailer_orders = np.sum(retailer_actions, axis=0)
         retailer_deliveries = self._fulfill_retailer_orders(retailer_actions)
 
-        warehouse_reward = self.warehouse.step(
+        raw_warehouse_reward = self.warehouse.step(
             warehouse_action, retailer_actions, retailer_deliveries,
             self.wholesale_prices, self.supplier_prices
         )
 
+        # Apply reward shaping to warehouse
+        total_demand = np.sum(total_retailer_orders)
+        warehouse_stockout = np.maximum(total_demand - np.sum(self.warehouse.inventory), 0)
+        warehouse_reward = self._shape_reward(
+            raw_warehouse_reward,
+            warehouse_stockout,
+            np.sum(self.warehouse.inventory),
+            self.warehouse.capacity,
+            total_demand
+        )
+
         retailer_rewards = []
         for i, retailer in enumerate(self.retailers):
-            reward = retailer.step(
+            raw_reward = retailer.step(
                 retailer_actions[i], retailer_deliveries[i],
                 actual_demand[i], self.retail_prices
             )
-            retailer_rewards.append(reward)
+            # Calculate stockout for shaping
+            stockout = np.maximum(np.sum(actual_demand[i]) - np.sum(retailer.inventory), 0)
+            # Apply reward shaping
+            shaped_reward = self._shape_reward(
+                raw_reward,
+                stockout,
+                np.sum(retailer.inventory),
+                retailer.capacity,
+                np.sum(actual_demand[i])
+            )
+            retailer_rewards.append(shaped_reward)
 
         observations = {
             'warehouse': self.warehouse.get_state(),
@@ -378,3 +406,54 @@ class SupplyChainEnv:
                 ]
                 return np.array(features)
         return np.zeros(6)
+
+    def _normalize_reward(self, reward: float) -> float:
+        """Normalize reward using running statistics"""
+        # Update running statistics
+        self.reward_count += 1
+        delta = reward - self.reward_mean
+        self.reward_mean += delta / self.reward_count
+        self.reward_std = np.sqrt(((self.reward_count - 1) * self.reward_std**2 + delta * (reward - self.reward_mean)) / self.reward_count)
+
+        # Normalize
+        if self.reward_std > 1e-6:
+            normalized = (reward - self.reward_mean) / (self.reward_std + 1e-8)
+        else:
+            normalized = reward
+
+        # Clip to reasonable range
+        normalized = np.clip(normalized, -10, 10)
+
+        # Apply scaling
+        return normalized * self.reward_scale
+
+    def _shape_reward(self, raw_profit: float, stockout: float, inventory_level: float,
+                     capacity: float, demand: float) -> float:
+        """Add reward shaping to provide denser feedback"""
+        shaped_reward = raw_profit * self.reward_scale
+
+        if self.use_reward_shaping:
+            # Penalize stockouts more heavily (sparse reward issue)
+            stockout_penalty = -stockout * 0.5 * self.reward_scale
+
+            # Reward for maintaining reasonable inventory (not too high, not too low)
+            target_inventory = demand * 2  # Target 2x demand as safety stock
+            inventory_ratio = inventory_level / (target_inventory + 1e-6)
+
+            # Penalty for both over and under-stocking
+            if inventory_ratio < 0.5:
+                inventory_penalty = -0.2 * self.reward_scale  # Under-stocked
+            elif inventory_ratio > 3.0:
+                inventory_penalty = -0.2 * self.reward_scale  # Over-stocked
+            else:
+                inventory_penalty = 0.1 * self.reward_scale  # Good inventory level
+
+            # Service level bonus: reward for meeting demand
+            if stockout < 1e-6 and demand > 0:
+                service_bonus = 0.3 * self.reward_scale
+            else:
+                service_bonus = 0.0
+
+            shaped_reward += stockout_penalty + inventory_penalty + service_bonus
+
+        return shaped_reward
