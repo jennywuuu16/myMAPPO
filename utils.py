@@ -33,37 +33,45 @@ def calculate_counterfactual_profit(env, actual_demand: np.ndarray, config: Conf
     for i, retailer in enumerate(env.retailers):
         demand_i = actual_demand[i]
         current_inventory = retailer.inventory
-        
+
         # Optimal order is to meet exactly the demand minus current inventory
         optimal_order = np.maximum(demand_i - current_inventory, 0)
-        
+
         # Calculate profit with optimal order using dynamic prices
         sales = np.minimum(current_inventory + optimal_order, demand_i)
         revenue = np.sum(sales * retail_prices)
-        ordering_cost = np.sum(optimal_order * config.ordering_cost_retailer)
+        ordering_cost = np.sum(optimal_order * wholesale_prices)  # Payment to warehouse at wholesale prices
         holding_cost = np.sum((current_inventory + optimal_order - sales) * config.holding_cost_retailer)
-        
+
         optimal_profit += revenue - ordering_cost - holding_cost
     
     # For warehouse, calculate optimal order given aggregated retailer demand
     total_retailer_demand = np.sum(actual_demand, axis=0)
     warehouse_inventory = env.warehouse.inventory
-    
-    # Warehouse optimal order (considering lead time)
+
+    # Calculate warehouse profit component (happens every day, not just order days)
+    # Optimal fulfillment: deliver as much as possible to meet demand
+    optimal_fulfillment = np.minimum(warehouse_inventory, total_retailer_demand)
+    revenue = np.sum(optimal_fulfillment * wholesale_prices)
+
+    # Optimal ordering (only on order days)
+    ordering_cost = 0.0
     if env.warehouse.is_order_day():
-        # Estimate demand for lead time period
-        future_demand_estimate = total_retailer_demand * config.lead_time
+        # Estimate demand for lead time + order cycle period
+        future_demand_estimate = total_retailer_demand * (config.lead_time + config.warehouse_order_cycle)
         optimal_warehouse_order = np.maximum(future_demand_estimate - warehouse_inventory, 0)
-        
-        # Calculate warehouse profit component with dynamic prices
-        fulfilled = np.minimum(warehouse_inventory, total_retailer_demand)
-        revenue = np.sum(fulfilled * wholesale_prices)
-        ordering_cost = np.sum(optimal_warehouse_order * config.ordering_cost_warehouse)
-        holding_cost = np.sum(warehouse_inventory * config.holding_cost_warehouse)
-        supplier_cost = np.sum(optimal_warehouse_order * supplier_prices)
-        
-        optimal_profit += revenue - ordering_cost - holding_cost - supplier_cost
-    
+        ordering_cost = np.sum(optimal_warehouse_order * supplier_prices)  # Payment to suppliers
+
+    # Holding cost is paid every day on remaining inventory after fulfillment
+    remaining_inventory = warehouse_inventory - optimal_fulfillment
+    holding_cost = np.sum(np.maximum(remaining_inventory, 0) * config.holding_cost_warehouse)
+
+    # Stockout cost for unmet demand
+    stockout = np.maximum(total_retailer_demand - optimal_fulfillment, 0)
+    stockout_cost = np.sum(stockout * config.stockout_cost_warehouse)
+
+    optimal_profit += revenue - ordering_cost - holding_cost - stockout_cost
+
     return optimal_profit
 
 def solve_newsvendor_problem(demand_mean: float, demand_std: float, 

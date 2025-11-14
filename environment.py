@@ -67,7 +67,7 @@ class RetailerAgent:
         return np.sin(2 * np.pi * len(self.demand_history) / 7)
 
     def step(self, order: np.ndarray, received: np.ndarray, demand: np.ndarray,
-             retail_prices: np.ndarray) -> float:
+             retail_prices: np.ndarray, wholesale_prices: np.ndarray) -> float:
         """Execute one step for the retailer"""
         self.inventory += received
         sales = np.minimum(self.inventory, demand)
@@ -75,7 +75,7 @@ class RetailerAgent:
         stockout = np.maximum(demand - sales, 0)
 
         revenue = np.sum(sales * retail_prices)
-        ordering_cost = np.sum(order * self.config.ordering_cost_retailer)
+        ordering_cost = np.sum(order * wholesale_prices)  # Payment to warehouse at wholesale prices
         holding_cost = np.sum(self.inventory * self.config.holding_cost_retailer)
         stockout_cost = np.sum(stockout * self.config.stockout_cost_retailer)
         daily_profit = revenue - ordering_cost - holding_cost - stockout_cost
@@ -163,16 +163,15 @@ class WarehouseAgent:
         self.inventory = np.maximum(self.inventory, 0)
 
         revenue = np.sum(retailer_deliveries * wholesale_prices)
-        ordering_cost = np.sum(order_to_suppliers * self.config.ordering_cost_warehouse)
+        ordering_cost = np.sum(order_to_suppliers * supplier_prices)  # Payment to suppliers
         holding_cost = np.sum(self.inventory * self.config.holding_cost_warehouse)
-        supplier_cost = np.sum(order_to_suppliers * supplier_prices)
 
         total_demand = np.sum(retailer_orders, axis=0)
         fulfilled = np.sum(retailer_deliveries, axis=0)
         stockout = np.maximum(total_demand - fulfilled, 0)
         stockout_cost = np.sum(stockout * self.config.stockout_cost_warehouse)
 
-        daily_profit = revenue - ordering_cost - holding_cost - supplier_cost - stockout_cost
+        daily_profit = revenue - ordering_cost - holding_cost - stockout_cost
         self.profit += daily_profit
 
         self.retailer_demand_history.append(total_demand)
@@ -270,7 +269,7 @@ class SupplyChainEnv:
         for i, retailer in enumerate(self.retailers):
             reward = retailer.step(
                 retailer_actions[i], retailer_deliveries[i],
-                actual_demand[i], self.retail_prices
+                actual_demand[i], self.retail_prices, self.wholesale_prices
             )
             retailer_rewards.append(reward)
 
