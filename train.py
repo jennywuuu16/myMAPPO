@@ -1,7 +1,6 @@
 """
 Main Training Script for MAPPO Supply Chain Management
 """
-
 import torch
 import numpy as np
 import os
@@ -84,11 +83,25 @@ def prepare_predictor_state(env: SupplyChainEnv, config: Config) -> Dict:
 def calculate_decision_error(env: SupplyChainEnv,
                             predicted_demand: np.ndarray,
                             actual_demand: np.ndarray,
-                            config: Config) -> float:
+                            system_reward: float,
+                            config: Config,
+                            alpha: float=0.7) -> float:
     """
+    Calculate predictor reward based on System performance
+    Predictor gets rewardd when its forcasts lead to profitable decisions
     Calculate decision error for predictor agent
-    Reward predictor for accurate predictions (closer to actual demand = higher reward)
     """
+    #prediction_reward = system_reward * 0.1
+
+    # Calculate profit achieved with predicted demand (already computed in environment step)
+    predicted_profit = env.warehouse.profit + sum(r.profit for r in env.retailers)
+    
+    # Calculate theoretical optimal profit with perfect demand knowledge
+    optimal_profit = calculate_counterfactual_profit(env, actual_demand, config)
+    
+    # Decision error (negative because we want to minimize the gap)
+    profit_gap = abs(predicted_profit - optimal_profit)/(optimal_profit, 1e-5)
+    
     # Calculate prediction accuracy using negative MSE (higher is better)
     if predicted_demand.ndim == 3:
         # Shape: (num_retailers, horizon, num_products)
@@ -99,17 +112,9 @@ def calculate_decision_error(env: SupplyChainEnv,
 
     # Calculate MSE between prediction and actual
     mse = np.mean((predicted_next_day - actual_demand) ** 2)
-
-    # Convert to reward (negative MSE, scaled)
-    # Add bonus for being close to actual demand
-    prediction_reward = -mse * 0.01  # Scale down MSE
-
-    # Additional reward component: how well did predictions help with inventory decisions?
-    # Reward if predictions are in the right ballpark (within 50% of actual)
-    relative_error = np.abs(predicted_next_day - actual_demand) / (actual_demand + 1e-6)
-    accuracy_bonus = np.sum(relative_error < 0.5) * 0.1  # Bonus for accurate predictions
-
-    total_reward = prediction_reward + accuracy_bonus
+    
+    total_reward = -(alpha* profit_gap + (1 - alpha) * mse)
+    print(f"optimal profit:{optimal_profit},predicted profit:{predicted_profit}")
 
     return total_reward
 
@@ -131,6 +136,22 @@ def train_mappo(config: Config):
     # Create environment and algorithm
     env = SupplyChainEnv(config)
     mappo = MAPPO(config)
+
+    # ============================
+# Load pretrained Predictor model
+# ============================
+    predictor_path = os.path.join(config.model_save_path, 'predictor_pretrained.pt')
+    if os.path.exists(predictor_path):
+        try:
+            mappo.predictor_actor.load_state_dict(
+                torch.load(predictor_path, map_location=config.device)
+            )
+            print(f"✅ Loaded pretrained predictor weights from {predictor_path}")
+        except Exception as e:
+            print(f"⚠️ Failed to load pretrained predictor model: {e}")
+    else:
+        print("⚠️ No pretrained predictor model found — training from scratch.")
+
     
     # Training metrics
     episode_rewards = []
@@ -170,6 +191,7 @@ def train_mappo(config: Config):
                     env, 
                     actions['predicted_demand'],
                     info['actual_demand'],
+                    rewards['system'],
                     config
                 )
                 rewards['predictor'] = decision_error
@@ -407,7 +429,6 @@ if __name__ == "__main__":
     
     # Train MAPPO
     trained_mappo, rewards = train_mappo(config)
-    
     # Evaluate trained policy
     print("\nEvaluating trained policy...")
     evaluation_results = evaluate_policy(trained_mappo, config, num_episodes=20)
