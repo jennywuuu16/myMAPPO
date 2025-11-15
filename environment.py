@@ -1,21 +1,14 @@
-"""
-Supply Chain Environment for MAPPO
-Enhanced with PredictorAgent integration
-"""
-
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from config import Config
 from data_loader import SalesDataLoader
 
-
 @dataclass
 class Inventory:
     """Inventory state for entities"""
     current: np.ndarray
     capacity: float
-
 
 class RetailerAgent:
     """Retailer agent in the supply chain"""
@@ -105,6 +98,7 @@ class WarehouseAgent:
         """Get current state of the warehouse"""
         inventory_normalized = np.atleast_1d(self.inventory / self.capacity)
         demand_pred = np.atleast_1d(self._get_demand_prediction())
+        
         ordering_cost = np.array([self.config.ordering_cost_warehouse / 10.0])
         lead_time = np.array([self.config.lead_time / 10.0])
         downstream_inv = np.atleast_1d(self._get_downstream_inventory_summary())
@@ -123,13 +117,12 @@ class WarehouseAgent:
     def _get_demand_prediction(self) -> np.ndarray:
         """Use PredictorAgent’s 4-day forecast"""
         if hasattr(self, "predicted_demand") and np.any(self.predicted_demand):
-            # 平均未来4天预测需求
-            avg_forecast = np.mean(self.predicted_demand, axis=0)
-            return avg_forecast / 1000.0
+            total_demand = np.sum(self.predicted_demand, axis=0)
+            return total_demand / 1000.0
         else:
             # fallback
             if len(self.retailer_demand_history) < 4:
-                return np.atleast_1d(np.ones(self.config.num_products) * 0.5)
+                return np.atleast_1d(np.ones(self.config.num_products) * 0.05)
             recent_demand = np.array(self.retailer_demand_history[-14:])
             if recent_demand.ndim == 1:
                 return np.atleast_1d(np.mean(recent_demand) / 1000.0)
@@ -146,6 +139,7 @@ class WarehouseAgent:
     def step(self, order_to_suppliers: np.ndarray,
              retailer_orders: np.ndarray,
              retailer_deliveries: np.ndarray,
+             ordering_cost_retailer: np.ndarray,
              wholesale_prices: np.ndarray,
              supplier_prices: np.ndarray) -> float:
         """Execute one step for the warehouse"""
@@ -162,17 +156,19 @@ class WarehouseAgent:
         self.inventory -= np.array(retailer_deliveries).reshape(-1)
         self.inventory = np.maximum(self.inventory, 0)
 
-        revenue = np.sum(retailer_deliveries * wholesale_prices)
+        revenue = np.sum(retailer_deliveries * self.config.wholesale_prices)
+        #revenue = np.sum(retailer_deliveries * ordering_cost_retailer)
+
         ordering_cost = np.sum(order_to_suppliers * self.config.ordering_cost_warehouse)
         holding_cost = np.sum(self.inventory * self.config.holding_cost_warehouse)
-        supplier_cost = np.sum(order_to_suppliers * supplier_prices)
+        #supplier_cost = np.sum(order_to_suppliers * supplier_prices)
 
         total_demand = np.sum(retailer_orders, axis=0)
         fulfilled = np.sum(retailer_deliveries, axis=0)
         stockout = np.maximum(total_demand - fulfilled, 0)
         stockout_cost = np.sum(stockout * self.config.stockout_cost_warehouse)
 
-        daily_profit = revenue - ordering_cost - holding_cost - supplier_cost - stockout_cost
+        daily_profit = revenue - ordering_cost - holding_cost - stockout_cost
         self.profit += daily_profit
 
         self.retailer_demand_history.append(total_demand)
@@ -220,7 +216,7 @@ class SupplyChainEnv:
         self.warehouse = WarehouseAgent(self.config)
         self.current_step = 0
 
-        self.demand_sequence = self.data_loader.get_demand_sequence(
+        self.demand_sequence = self.data_loader.get_demand_sequence(wholesale_prices=self.config.wholesale_prices,
             start_date=None, length=self.config.episode_length)
         self.current_demand_idx = 0
 
@@ -229,8 +225,8 @@ class SupplyChainEnv:
             self.wholesale_prices = np.atleast_1d(self.demand_sequence['context']['wholesale_prices'])
             self.supplier_prices = np.atleast_1d(self.demand_sequence['context']['supplier_prices'])
         else:
-            self.retail_prices = np.ones(self.config.num_products) * 10.0
-            self.wholesale_prices = self.retail_prices * self.config.wholesale_price_ratio
+            #self.retail_prices = np.ones(self.config.num_products) * 10.0
+            #self.wholesale_prices = self.retail_prices * self.config.wholesale_price_ratio
             self.supplier_prices = self.retail_prices * self.config.supplier_price_ratio
 
         observations = {
@@ -267,11 +263,11 @@ class SupplyChainEnv:
 
         total_retailer_orders = np.sum(retailer_actions, axis=0)
         retailer_deliveries = self._fulfill_retailer_orders(retailer_actions)
+        ordering_cost_retailer_vec = np.ones(self.config.num_products)*self.config.ordering_cost_retailer
 
         raw_warehouse_reward = self.warehouse.step(
-            warehouse_action, retailer_actions, retailer_deliveries,
-            self.wholesale_prices, self.supplier_prices
-        )
+            warehouse_action, retailer_actions, retailer_deliveries, ordering_cost_retailer_vec,
+            self.wholesale_prices, self.supplier_prices)
 
         # Apply reward shaping to warehouse
         total_demand = np.sum(total_retailer_orders)
@@ -324,7 +320,6 @@ class SupplyChainEnv:
 
         return observations, rewards, done, info
 
-    # 以下函数不变
     def _get_current_demand(self) -> np.ndarray:
         if self.demand_sequence is None or self.current_demand_idx >= self.demand_sequence['length']:
             return np.zeros((self.config.num_retailers, self.config.num_products))
