@@ -7,7 +7,7 @@ We want the Warehouse and Retailers Agents make good decisions based on the Pred
 
 
 PredictorAgent → predict future demands → action_pred 形状 [warehouse order period, num_products]
-       ↓
+       ↓next
 RetailerAgent：只应读取“下一天预测值”(because retailers replenish everyday)
-       ↓
+       ↓next
 WarehouseAgent：应读取完整的未来预测值(covering its order period)
