@@ -8,27 +8,28 @@ from typing import Dict, List, Tuple, Optional
 from scipy.optimize import linprog
 from config import Config
 
-def calculate_counterfactual_profit(env, actual_demand: np.ndarray, config: Config) -> float:
+def calculate_counterfactual_profit(env, actual_demand: np.ndarray, config: Config) -> Dict:
     """
     Calculate the theoretical optimal profit with perfect demand knowledge
     This is used to compute the decision error for the predictor agent
-    
+
     Args:
         env: Supply chain environment (contains price information)
         actual_demand: Actual demand that occurred
         config: Configuration object
-    
+
     Returns:
-        Theoretical optimal profit
+        Dict with optimal profits breakdown: {'retailer': float, 'warehouse': float, 'total': float}
     """
-    
+
     # Get dynamic prices from environment
     retail_prices = env.retail_prices if env.retail_prices is not None else np.ones(config.num_products) * 10.0
     wholesale_prices = env.wholesale_prices if env.wholesale_prices is not None else retail_prices * 0.6
     supplier_prices = env.supplier_prices if env.supplier_prices is not None else retail_prices * 0.3
-    
-    optimal_profit = 0.0
-    
+
+    optimal_retailer_profit = 0.0
+    optimal_warehouse_profit = 0.0
+
     # For each retailer, calculate optimal order quantity given perfect demand knowledge
     for i, retailer in enumerate(env.retailers):
         demand_i = actual_demand[i]
@@ -43,8 +44,8 @@ def calculate_counterfactual_profit(env, actual_demand: np.ndarray, config: Conf
         ordering_cost = np.sum(optimal_order * wholesale_prices)  # Payment to warehouse at wholesale prices
         holding_cost = np.sum((current_inventory + optimal_order - sales) * config.holding_cost_retailer)
 
-        optimal_profit += revenue - ordering_cost - holding_cost
-    
+        optimal_retailer_profit += revenue - ordering_cost - holding_cost
+
     # For warehouse, calculate optimal order given aggregated retailer demand
     total_retailer_demand = np.sum(actual_demand, axis=0)
     warehouse_inventory = env.warehouse.inventory
@@ -70,9 +71,13 @@ def calculate_counterfactual_profit(env, actual_demand: np.ndarray, config: Conf
     stockout = np.maximum(total_retailer_demand - optimal_fulfillment, 0)
     stockout_cost = np.sum(stockout * config.stockout_cost_warehouse)
 
-    optimal_profit += revenue - ordering_cost - holding_cost - stockout_cost
+    optimal_warehouse_profit = revenue - ordering_cost - holding_cost - stockout_cost
 
-    return optimal_profit
+    return {
+        'retailer': float(optimal_retailer_profit),
+        'warehouse': float(optimal_warehouse_profit),
+        'total': float(optimal_retailer_profit + optimal_warehouse_profit)
+    }
 
 def solve_newsvendor_problem(demand_mean: float, demand_std: float, 
                             holding_cost: float, stockout_cost: float,

@@ -81,24 +81,35 @@ def prepare_predictor_state(env: SupplyChainEnv, config: Config) -> Dict:
         'context': context
     }
 
-def calculate_decision_error(env: SupplyChainEnv, 
+def calculate_decision_error(env: SupplyChainEnv,
                             predicted_demand: np.ndarray,
                             actual_demand: np.ndarray,
-                            config: Config) -> float:
+                            config: Config) -> Dict:
     """
     Calculate decision error for predictor agent
     Decision error = profit with predicted demand - profit with perfect demand knowledge
+
+    Returns:
+        Dict with error breakdown: {'error': float, 'predicted_profit': float, 'optimal_profit': Dict}
     """
     # Calculate profit achieved with predicted demand (already computed in environment step)
     predicted_profit = env.warehouse.profit + sum(r.profit for r in env.retailers)
-    
+
     # Calculate theoretical optimal profit with perfect demand knowledge
     optimal_profit = calculate_counterfactual_profit(env, actual_demand, config)
-    
+
+    # Calculate profit gap with safe division
+    profit_gap = abs(predicted_profit - optimal_profit['total']) / max(abs(optimal_profit['total']), 1e-5)
+
     # Decision error (negative because we want to minimize the gap)
-    decision_error = -(abs(predicted_profit - optimal_profit))
-    
-    return decision_error
+    decision_error = -profit_gap
+
+    return {
+        'error': float(decision_error),
+        'predicted_profit': float(predicted_profit),
+        'optimal_profit': optimal_profit,
+        'profit_gap': float(profit_gap)
+    }
 
 def train_mappo(config: Config):
     """Main training function"""
@@ -153,14 +164,14 @@ def train_mappo(config: Config):
             
             # Calculate predictor reward (decision error)
             if 'predicted_demand' in actions:
-                decision_error = calculate_decision_error(
-                    env, 
+                decision_error_result = calculate_decision_error(
+                    env,
                     actions['predicted_demand'],
                     info['actual_demand'],
                     config
                 )
-                rewards['predictor'] = decision_error
-                episode_predictor_error += decision_error
+                rewards['predictor'] = decision_error_result['error']
+                episode_predictor_error += decision_error_result['error']
             
             # Store transition
             transition = Transition(
