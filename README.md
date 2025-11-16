@@ -2,7 +2,8 @@
 test
 ## Overview
 This implementation of MAPPO (Multi-Agent Proximal Policy Optimization) for supply chain management now supports loading historical sales data from CSV files.
-Specifically, A PredictorAgent is used for guiding the prediction model, a minimized deicison error is expected rathere than simple prediction error (such as MSE)
+Specifically, A PredictorAgent is used for guiding the prediction model, a minimized deicison error is expected rathere than simple prediction error (such as MSE).
+The decision error is defined as decision_error = predicted_profit(profit when using predicted demand to decide replenishment quantity) - optimal_profit (profit when knowing the actual demand)
 We want the Warehouse and Retailers Agents make good decisions based on the PredictionAgent Action.The alogrithm basic framework is as follows:
 
 
